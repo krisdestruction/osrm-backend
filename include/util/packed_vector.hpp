@@ -1,6 +1,7 @@
 #ifndef PACKED_VECTOR_HPP
 #define PACKED_VECTOR_HPP
 
+#include "util/integer_range.hpp"
 #include "util/typedefs.hpp"
 #include "util/vector_view.hpp"
 
@@ -31,137 +32,194 @@ inline void write(storage::io::FileWriter &writer,
 
 namespace detail
 {
+
+template <typename WordT, typename T>
+inline T get_lower_half_value(WordT word,
+                        WordT mask,
+                        std::uint8_t offset,
+                        typename std::enable_if_t<std::is_integral<T>::value> * = 0)
+{
+    return static_cast<T>((word & mask) >> offset);
+}
+
+template <typename WordT, typename T>
+inline T get_lower_half_value(WordT word, WordT mask, std::uint8_t offset, typename T::value_type * = 0)
+{
+    return T{static_cast<typename T::value_type>((word & mask) >> offset)};
+}
+
+template <typename WordT, typename T>
+inline T get_upper_half_value(WordT word,
+                        WordT mask,
+                        std::uint8_t offset,
+                        typename std::enable_if_t<std::is_integral<T>::value> * = 0)
+{
+    return static_cast<T>((word & mask) << offset);
+}
+
+template <typename WordT, typename T>
+inline T get_upper_half_value(WordT word, WordT mask, std::uint8_t offset, typename T::value_type * = 0)
+{
+    return T{static_cast<typename T::value_type>((word & mask) << offset)};
+}
+
+template <typename WordT, typename T>
+inline WordT set_lower_value(WordT word, WordT mask, std::uint8_t offset, T value)
+{
+    return (word & ~mask) | (static_cast<WordT>(value) << offset);
+}
+
+template <typename WordT, typename T>
+inline WordT set_upper_value(WordT word, WordT mask, std::uint8_t offset, T value)
+{
+    return (word & ~mask) | (static_cast<WordT>(value) >> offset);
+}
+
 template <typename T, std::size_t Bits, storage::Ownership Ownership> class PackedVector
 {
+    using WordT = std::uint64_t;
+
     // This fails for all strong typedef types
     // static_assert(std::is_integral<T>::value, "T must be an integral type.");
-    static_assert(sizeof(T) <= sizeof(std::uint64_t), "Maximum size of type T is 8 bytes");
+    static_assert(sizeof(T) <= sizeof(WordT), "Maximum size of type T is 8 bytes");
     static_assert(Bits > 0, "Minimum number of bits is 0.");
-    static_assert(Bits <= sizeof(std::uint64_t) * CHAR_BIT, "Maximum number of bits is 64.");
+    static_assert(Bits <= sizeof(WordT) * CHAR_BIT, "Maximum number of bits is 64.");
 
-    static const constexpr std::size_t ELEMSIZE = sizeof(std::uint64_t) * CHAR_BIT;
-    static const constexpr std::size_t PACKSIZE = Bits * ELEMSIZE;
+    static constexpr std::size_t WORD_BITS = sizeof(WordT) * CHAR_BIT;
+    // number of elements per block, use the number of bits so we make sure
+    // we can devide the total number of bits by the element bis
+public:
+    static constexpr std::size_t BLOCK_ELEMENTS = WORD_BITS;
+private:
+    // number of words per block
+    static constexpr std::size_t BLOCK_WORDS = (Bits * BLOCK_ELEMENTS) / WORD_BITS;
+
+    // mask for the lower/upper word of a record
+    std::array<WordT, BLOCK_ELEMENTS> lower_mask;
+    std::array<WordT, BLOCK_ELEMENTS> upper_mask;
+    std::array<std::uint8_t, BLOCK_ELEMENTS> lower_offset;
+    std::array<std::uint8_t, BLOCK_ELEMENTS> upper_offset;
+    // in which word of the block is the element
+    std::array<std::uint8_t, BLOCK_ELEMENTS> word_offset;
+
+    struct InternalIndex
+    {
+        // index to the word that contains the lower
+        // part of the value
+        // note: upper_word == lower_word + 1
+        std::size_t lower_word;
+        // index to the element of the block
+        std::uint8_t element;
+    };
 
   public:
     using value_type = T;
+    using block_type = WordT;
 
-    /**
-     * Returns the size of the packed vector datastructure with `elements` packed elements (the size
-     * of
-     * its underlying uint64 vector)
-     */
-    inline static std::size_t elements_to_blocks(std::size_t elements)
+    class reference
     {
-        return std::ceil(static_cast<double>(elements) * Bits / ELEMSIZE);
+      public:
+        reference(PackedVector &container, const InternalIndex internal_index)
+            : container(container), internal_index(internal_index)
+        {
+        }
+
+        reference &operator=(const value_type value) { container.set_value(internal_index, value); }
+
+        operator T() const { return container.get_value(internal_index); }
+
+        friend bool operator==(const value_type lhs, const reference &rhs)
+        {
+            return static_cast<T>(rhs) == lhs;
+        }
+
+        friend bool operator==(const reference &lhs, const value_type rhs)
+        {
+            return static_cast<T>(lhs) == rhs;
+        }
+
+        friend std::ostream &operator<<(std::ostream &lhs, const reference &rhs)
+        {
+            lhs << static_cast<T>(rhs);
+            return lhs;
+        }
+
+      private:
+        PackedVector &container;
+        const InternalIndex internal_index;
+    };
+
+    PackedVector(std::initializer_list<T> list)
+    {
+        initialize_mask();
+        reserve(list.size());
+        for (const auto value : list)
+            push_back(value);
     }
 
-    void push_back(T data)
+    PackedVector() { initialize_mask(); }
+
+    PackedVector(util::ViewOrVector<std::uint64_t, Ownership> vec_, std::size_t num_elements)
+        : vec(std::move(vec_)), num_elements(num_elements)
     {
-        std::uint64_t node_id = static_cast<std::uint64_t>(data);
+        initialize_mask();
+    }
 
-        // mask incoming values, just in case they are > bitsize
-        const std::uint64_t incoming_mask = static_cast<std::uint64_t>(pow(2, Bits)) - 1;
-        node_id = node_id & incoming_mask;
+    // forces the efficient read-only lookup
+    auto peek(const std::size_t index) const { return operator[](index); }
 
-        const std::size_t available = (PACKSIZE - Bits * num_elements) % ELEMSIZE;
+    auto operator[](const std::size_t index) const { return get_value(get_internal_index(index)); }
 
-        if (available == 0)
-        {
-            // insert ID at the left side of this element
-            std::uint64_t at_left = node_id << (ELEMSIZE - Bits);
+    auto operator[](const std::size_t index) { return reference{*this, get_internal_index(index)}; }
 
-            add_last_elem(at_left);
-        }
-        else if (available >= Bits)
-        {
-            // insert ID somewhere in the middle of this element; ID can be contained
-            // entirely within one element
-            const std::uint64_t shifted = node_id << (available - Bits);
-
-            replace_last_elem(vec_back() | shifted);
-        }
+    auto at(std::size_t index) const
+    {
+        if (index < num_elements)
+            return operator[](index);
         else
+            throw std::out_of_range(std::to_string(index) + " is bigger then container size " +
+                                    std::to_string(num_elements));
+    }
+
+    auto at(std::size_t index)
+    {
+        if (index < num_elements)
+            return operator[](index);
+        else
+            throw std::out_of_range(std::to_string(index) + " is bigger then container size " +
+                                    std::to_string(num_elements));
+    }
+
+    auto front() const { return operator[](0); }
+    auto back() const { return operator[](num_elements - 1); }
+    auto front() { return operator[](0); }
+    auto back() { return operator[](num_elements - 1); }
+
+    void push_back(const T value)
+    {
+        auto internal_index = get_internal_index(num_elements);
+
+        while (internal_index.lower_word + 1 >= vec.size())
         {
-            // ID will be split between the end of this element and the beginning
-            // of the next element
-            const std::uint64_t left = node_id >> (Bits - available);
-
-            std::uint64_t right = node_id << (ELEMSIZE - (Bits - available));
-
-            replace_last_elem(vec_back() | left);
-            add_last_elem(right);
+            vec.push_back(0);
         }
 
+        set_value(internal_index, value);
         num_elements++;
-    }
 
-    T operator[](const std::size_t index) const { return at(index); }
-
-    T at(const std::size_t a_index) const
-    {
-        BOOST_ASSERT(a_index < num_elements);
-
-        const std::size_t pack_group = trunc(a_index / ELEMSIZE);
-        const std::size_t pack_index = (a_index + ELEMSIZE) % ELEMSIZE;
-        const std::size_t left_index = (PACKSIZE - Bits * pack_index) % ELEMSIZE;
-
-        const bool back_half = pack_index >= Bits;
-        const std::size_t index =
-            pack_group * Bits + trunc(pack_index / Bits) + trunc((pack_index - back_half) / 2);
-
-        BOOST_ASSERT(index < vec.size());
-        const std::uint64_t elem = static_cast<std::uint64_t>(vec.at(index));
-
-        if (left_index == 0)
-        {
-            // ID is at the far left side of this element
-            return T{elem >> (ELEMSIZE - Bits)};
-        }
-        else if (left_index >= Bits)
-        {
-            // ID is entirely contained within this element
-            const std::uint64_t at_right = elem >> (left_index - Bits);
-            const std::uint64_t left_mask = static_cast<std::uint64_t>(pow(2, Bits)) - 1;
-            return T{at_right & left_mask};
-        }
-        else
-        {
-            // ID is split between this and the next element
-            const std::uint64_t left_mask = static_cast<std::uint64_t>(pow(2, left_index)) - 1;
-            const std::uint64_t left_side = (elem & left_mask) << (Bits - left_index);
-
-            BOOST_ASSERT(index < vec.size() - 1);
-            const std::uint64_t next_elem = static_cast<std::uint64_t>(vec.at(index + 1));
-
-            const std::uint64_t right_side = next_elem >> (ELEMSIZE - (Bits - left_index));
-            return T{left_side | right_side};
-        }
+        BOOST_ASSERT(back() == value);
     }
 
     std::size_t size() const { return num_elements; }
 
+    std::size_t size_blocks() const { return vec.size(); }
+
+    std::size_t capacity() const { return vec.capacity() / BLOCK_ELEMENTS; }
+
     template <bool enabled = (Ownership == storage::Ownership::View)>
     void reserve(typename std::enable_if<!enabled, std::size_t>::type capacity)
     {
-        vec.reserve(elements_to_blocks(capacity));
-    }
-
-    template <bool enabled = (Ownership == storage::Ownership::View)>
-    void reset(typename std::enable_if<enabled, std::uint64_t>::type *ptr,
-               typename std::enable_if<enabled, std::size_t>::type size)
-    {
-        vec.reset(ptr, size);
-    }
-
-    template <bool enabled = (Ownership == storage::Ownership::View)>
-    void set_number_of_entries(typename std::enable_if<enabled, std::size_t>::type count)
-    {
-        num_elements = count;
-    }
-
-    std::size_t capacity() const
-    {
-        return std::floor(static_cast<double>(vec.capacity()) * ELEMSIZE / Bits);
+        vec.reserve(capacity / BLOCK_ELEMENTS + 1);
     }
 
     friend void serialization::read<T, Bits, Ownership>(storage::io::FileReader &reader,
@@ -171,48 +229,70 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
                                                          const PackedVector &vec);
 
   private:
+    inline InternalIndex get_internal_index(const std::size_t index) const
+    {
+        const auto block_offset = BLOCK_ELEMENTS * (index / BLOCK_ELEMENTS);
+        const std::uint8_t element_index = index % BLOCK_ELEMENTS;
+        const auto lower_word_index = block_offset + word_offset[element_index];
+
+        return InternalIndex{lower_word_index, element_index};
+    }
+
+    inline T get_value(const InternalIndex internal_index) const
+    {
+        const auto lower_word = vec[internal_index.lower_word];
+        // note this can actually already be a word of the next block however in
+        // that case the upper mask will be 0.
+        // we make sure to have a sentinel element to avoid out-of-bounds errors.
+        const auto upper_word = vec[internal_index.lower_word + 1];
+        const auto value =
+            get_lower_half_value<WordT, T>(lower_word,
+                                     lower_mask[internal_index.element],
+                                     lower_offset[internal_index.element]) |
+            get_upper_half_value<WordT, T>(upper_word, upper_mask[internal_index.element], upper_offset[internal_index.element]);
+        return value;
+    }
+
+    inline void set_value(const InternalIndex internal_index, const T value)
+    {
+        auto &lower_word = vec[internal_index.lower_word];
+        auto &upper_word = vec[internal_index.lower_word + 1];
+        lower_word = set_lower_value<WordT, T>(lower_word,
+                                               lower_mask[internal_index.element],
+                                               lower_offset[internal_index.element],
+                                               value);
+        upper_word =
+            set_upper_value<WordT, T>(upper_word, upper_mask[internal_index.element], upper_offset[internal_index.element], value);
+    }
+
+    void initialize_mask()
+    {
+        // TODO port to constexptr function
+        const std::uint64_t mask = (1UL << Bits) - 1;
+        auto offset = 0;
+        for (auto element_index : util::irange<std::uint8_t>(0, BLOCK_ELEMENTS))
+        {
+            auto local_offset = offset % 64;
+            lower_mask[element_index] = mask << local_offset;
+            lower_offset[element_index] = local_offset;
+            // check we sliced off bits
+            if (local_offset + Bits > WORD_BITS)
+            {
+                upper_mask[element_index] = mask >> (WORD_BITS - local_offset);
+                upper_offset[element_index] = WORD_BITS - local_offset;
+            }
+            else
+            {
+                upper_mask[element_index] = 0;
+                upper_offset[element_index] = Bits;
+            }
+            word_offset[element_index] = offset / WORD_BITS;
+            offset += Bits;
+        }
+    }
+
     util::ViewOrVector<std::uint64_t, Ownership> vec;
-
     std::uint64_t num_elements = 0;
-
-    signed cursor = -1;
-
-    template <bool enabled = (Ownership == storage::Ownership::View)>
-    void replace_last_elem(typename std::enable_if<enabled, std::uint64_t>::type last_elem)
-    {
-        vec[cursor] = last_elem;
-    }
-
-    template <bool enabled = (Ownership == storage::Ownership::View)>
-    void replace_last_elem(typename std::enable_if<!enabled, std::uint64_t>::type last_elem)
-    {
-        vec.back() = last_elem;
-    }
-
-    template <bool enabled = (Ownership == storage::Ownership::View)>
-    void add_last_elem(typename std::enable_if<enabled, std::uint64_t>::type last_elem)
-    {
-        vec[cursor + 1] = last_elem;
-        cursor++;
-    }
-
-    template <bool enabled = (Ownership == storage::Ownership::View)>
-    void add_last_elem(typename std::enable_if<!enabled, std::uint64_t>::type last_elem)
-    {
-        vec.push_back(last_elem);
-    }
-
-    template <bool enabled = (Ownership == storage::Ownership::View)>
-    std::uint64_t vec_back(typename std::enable_if<enabled>::type * = nullptr)
-    {
-        return vec[cursor];
-    }
-
-    template <bool enabled = (Ownership == storage::Ownership::View)>
-    std::uint64_t vec_back(typename std::enable_if<!enabled>::type * = nullptr)
-    {
-        return vec.back();
-    }
 };
 }
 
