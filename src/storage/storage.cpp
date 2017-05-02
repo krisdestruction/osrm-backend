@@ -323,6 +323,7 @@ void Storage::PopulateLayout(DataLayout &layout)
         io::FileReader node_file(config.nodes_data_path, io::FileReader::VerifyFingerprint);
         const auto coordinate_list_size = node_file.ReadElementCount64();
         layout.SetBlockSize<util::Coordinate>(DataLayout::COORDINATE_LIST, coordinate_list_size);
+        node_file.Skip<util::Coordinate>(coordinate_list_size);
         // skip number of elements
         node_file.Skip<std::uint64_t>(1);
         const auto num_id_blocks = node_file.ReadElementCount64();
