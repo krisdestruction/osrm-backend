@@ -35,30 +35,32 @@ namespace detail
 
 template <typename WordT, typename T>
 inline T get_lower_half_value(WordT word,
-                        WordT mask,
-                        std::uint8_t offset,
-                        typename std::enable_if_t<std::is_integral<T>::value> * = 0)
+                              WordT mask,
+                              std::uint8_t offset,
+                              typename std::enable_if_t<std::is_integral<T>::value> * = 0)
 {
     return static_cast<T>((word & mask) >> offset);
 }
 
 template <typename WordT, typename T>
-inline T get_lower_half_value(WordT word, WordT mask, std::uint8_t offset, typename T::value_type * = 0)
+inline T
+get_lower_half_value(WordT word, WordT mask, std::uint8_t offset, typename T::value_type * = 0)
 {
     return T{static_cast<typename T::value_type>((word & mask) >> offset)};
 }
 
 template <typename WordT, typename T>
 inline T get_upper_half_value(WordT word,
-                        WordT mask,
-                        std::uint8_t offset,
-                        typename std::enable_if_t<std::is_integral<T>::value> * = 0)
+                              WordT mask,
+                              std::uint8_t offset,
+                              typename std::enable_if_t<std::is_integral<T>::value> * = 0)
 {
     return static_cast<T>((word & mask) << offset);
 }
 
 template <typename WordT, typename T>
-inline T get_upper_half_value(WordT word, WordT mask, std::uint8_t offset, typename T::value_type * = 0)
+inline T
+get_upper_half_value(WordT word, WordT mask, std::uint8_t offset, typename T::value_type * = 0)
 {
     return T{static_cast<typename T::value_type>((word & mask) << offset)};
 }
@@ -88,9 +90,10 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
     static constexpr std::size_t WORD_BITS = sizeof(WordT) * CHAR_BIT;
     // number of elements per block, use the number of bits so we make sure
     // we can devide the total number of bits by the element bis
-public:
+  public:
     static constexpr std::size_t BLOCK_ELEMENTS = WORD_BITS;
-private:
+
+  private:
     // number of words per block
     static constexpr std::size_t BLOCK_WORDS = (Bits * BLOCK_ELEMENTS) / WORD_BITS;
 
@@ -245,11 +248,12 @@ private:
         // that case the upper mask will be 0.
         // we make sure to have a sentinel element to avoid out-of-bounds errors.
         const auto upper_word = vec[internal_index.lower_word + 1];
-        const auto value =
-            get_lower_half_value<WordT, T>(lower_word,
-                                     lower_mask[internal_index.element],
-                                     lower_offset[internal_index.element]) |
-            get_upper_half_value<WordT, T>(upper_word, upper_mask[internal_index.element], upper_offset[internal_index.element]);
+        const auto value = get_lower_half_value<WordT, T>(lower_word,
+                                                          lower_mask[internal_index.element],
+                                                          lower_offset[internal_index.element]) |
+                           get_upper_half_value<WordT, T>(upper_word,
+                                                          upper_mask[internal_index.element],
+                                                          upper_offset[internal_index.element]);
         return value;
     }
 
@@ -261,8 +265,10 @@ private:
                                                lower_mask[internal_index.element],
                                                lower_offset[internal_index.element],
                                                value);
-        upper_word =
-            set_upper_value<WordT, T>(upper_word, upper_mask[internal_index.element], upper_offset[internal_index.element], value);
+        upper_word = set_upper_value<WordT, T>(upper_word,
+                                               upper_mask[internal_index.element],
+                                               upper_offset[internal_index.element],
+                                               value);
     }
 
     void initialize_mask()
