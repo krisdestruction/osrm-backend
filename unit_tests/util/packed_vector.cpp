@@ -62,6 +62,22 @@ BOOST_AUTO_TEST_CASE(packed_vector_resize_test)
     BOOST_CHECK_EQUAL(packed_vec[0], 42u);
 }
 
+BOOST_AUTO_TEST_CASE(packed_vector_iterator_test)
+{
+    PackedVector<std::uint32_t, 33> packed_vec(100);
+
+    std::iota(packed_vec.begin(), packed_vec.end(), 0);
+
+    BOOST_CHECK(std::is_sorted(packed_vec.begin(), packed_vec.end()));
+
+    auto idx = 0;
+    for (auto value : packed_vec)
+    {
+        BOOST_CHECK_EQUAL(packed_vec[idx], value);
+        idx++;
+    }
+}
+
 BOOST_AUTO_TEST_CASE(packed_vector_10bit_small_test)
 {
     PackedVector<std::uint32_t, 10> vector = {10, 5, 8, 12, 254, 4, (1 << 10) - 1, 6};

@@ -8,6 +8,9 @@
 #include "storage/io_fwd.hpp"
 #include "storage/shared_memory_ownership.hpp"
 
+#include <boost/iterator/iterator_facade.hpp>
+#include <boost/iterator/reverse_iterator.hpp>
+
 #include <cmath>
 #include <vector>
 
@@ -127,7 +130,11 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
         {
         }
 
-        reference &operator=(const value_type value) { container.set_value(internal_index, value); return *this; }
+        reference &operator=(const value_type value)
+        {
+            container.set_value(internal_index, value);
+            return *this;
+        }
 
         operator T() const { return container.get_value(internal_index); }
 
@@ -151,6 +158,46 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
         PackedVector &container;
         const InternalIndex internal_index;
     };
+
+    template<typename DataT>
+    class iterator_impl
+        : public boost::iterator_facade<PackedVector, DataT, boost::random_access_traversal_tag, reference>
+    {
+        typedef boost::iterator_facade<PackedVector, DataT, boost::random_access_traversal_tag> base_t;
+
+      public:
+        typedef typename base_t::value_type value_type;
+        typedef typename base_t::difference_type difference_type;
+        typedef typename base_t::reference reference;
+        typedef std::random_access_iterator_tag iterator_category;
+
+        explicit iterator_impl() : container(nullptr), index(std::numeric_limits<std::size_t>::max()) {}
+        explicit iterator_impl(PackedVector *container, const std::size_t index)
+            : container(container), index(index)
+        {
+        }
+
+      private:
+        void increment() { ++index; }
+        void decrement() { --index; }
+        void advance(difference_type offset) { index += offset; }
+        bool equal(const iterator_impl &other) const { return container->peek(index) == other.container->peek(other.index); }
+        reference dereference() const { return (*container)[index]; }
+        difference_type distance_to(const iterator_impl &other) const
+        {
+            return other.index - index;
+        }
+
+      private:
+        PackedVector *container;
+        std::size_t index;
+
+        friend class ::boost::iterator_core_access;
+    };
+
+    using iterator = iterator_impl<T>;
+    using const_iterator = iterator_impl<const T>;
+    using reverse_iterator = boost::reverse_iterator<iterator>;
 
     PackedVector(std::initializer_list<T> list)
     {
@@ -198,6 +245,18 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
             throw std::out_of_range(std::to_string(index) + " is bigger then container size " +
                                     std::to_string(num_elements));
     }
+
+    auto begin() { return iterator(this, 0); }
+
+    auto end() { return iterator(this, num_elements); }
+
+    auto cbegin() const { return const_iterator(this, 0); }
+
+    auto cend() const { return const_iterator(this, num_elements); }
+
+    auto rbegin() const { return reverse_iterator(end()); }
+
+    auto rend() const { return reverse_iterator(begin()); }
 
     auto front() const { return operator[](0); }
     auto back() const { return operator[](num_elements - 1); }
