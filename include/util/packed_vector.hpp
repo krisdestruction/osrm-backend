@@ -214,12 +214,12 @@ private:
 
     std::size_t size_blocks() const { return vec.size(); }
 
-    std::size_t capacity() const { return vec.capacity() / BLOCK_ELEMENTS; }
+    std::size_t capacity() const { return (vec.capacity() / BLOCK_WORDS) * BLOCK_ELEMENTS; }
 
     template <bool enabled = (Ownership == storage::Ownership::View)>
     void reserve(typename std::enable_if<!enabled, std::size_t>::type capacity)
     {
-        vec.reserve(capacity / BLOCK_ELEMENTS + 1);
+        vec.reserve((capacity / BLOCK_ELEMENTS + 1) * BLOCK_WORDS);
     }
 
     friend void serialization::read<T, Bits, Ownership>(storage::io::FileReader &reader,
