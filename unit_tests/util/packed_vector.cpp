@@ -51,6 +51,17 @@ BOOST_AUTO_TEST_CASE(packed_vector_capacity_test)
     BOOST_CHECK(packed_vec.capacity() >= 100);
 }
 
+BOOST_AUTO_TEST_CASE(packed_vector_resize_test)
+{
+    PackedVector<std::uint32_t, 33> packed_vec(100);
+
+    BOOST_CHECK_EQUAL(packed_vec.size(), 100);
+    packed_vec[99] = 1337;
+    packed_vec[0] = 42;
+    BOOST_CHECK_EQUAL(packed_vec[99], 1337u);
+    BOOST_CHECK_EQUAL(packed_vec[0], 42u);
+}
+
 BOOST_AUTO_TEST_CASE(packed_vector_10bit_small_test)
 {
     PackedVector<std::uint32_t, 10> vector = {10, 5, 8, 12, 254, 4, (1 << 10) - 1, 6};

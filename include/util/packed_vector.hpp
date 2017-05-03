@@ -127,7 +127,7 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
         {
         }
 
-        reference &operator=(const value_type value) { container.set_value(internal_index, value); }
+        reference &operator=(const value_type value) { container.set_value(internal_index, value); return *this; }
 
         operator T() const { return container.get_value(internal_index); }
 
@@ -161,6 +161,12 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
     }
 
     PackedVector() { initialize_mask(); }
+
+    PackedVector(std::size_t size)
+    {
+        initialize_mask();
+        resize(size);
+    }
 
     PackedVector(util::ViewOrVector<std::uint64_t, Ownership> vec_, std::size_t num_elements)
         : vec(std::move(vec_)), num_elements(num_elements)
@@ -204,7 +210,7 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
 
         while (internal_index.lower_word + 1 >= vec.size())
         {
-            vec.push_back(0);
+            allocate_blocks(1);
         }
 
         set_value(internal_index, value);
@@ -215,14 +221,20 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
 
     std::size_t size() const { return num_elements; }
 
-    std::size_t size_blocks() const { return vec.size(); }
+    void resize(std::size_t elements)
+    {
+        num_elements = elements;
+        auto num_blocks = std::ceil(static_cast<double>(elements) / BLOCK_ELEMENTS);
+        vec.resize(num_blocks * BLOCK_WORDS);
+    }
 
     std::size_t capacity() const { return (vec.capacity() / BLOCK_WORDS) * BLOCK_ELEMENTS; }
 
     template <bool enabled = (Ownership == storage::Ownership::View)>
     void reserve(typename std::enable_if<!enabled, std::size_t>::type capacity)
     {
-        vec.reserve((capacity / BLOCK_ELEMENTS + 1) * BLOCK_WORDS);
+        auto num_blocks = std::ceil(static_cast<double>(capacity) / BLOCK_ELEMENTS);
+        vec.reserve(num_blocks * BLOCK_WORDS);
     }
 
     friend void serialization::read<T, Bits, Ownership>(storage::io::FileReader &reader,
@@ -232,6 +244,11 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
                                                          const PackedVector &vec);
 
   private:
+    void allocate_blocks(std::size_t num_blocks)
+    {
+        vec.resize(vec.size() + num_blocks * BLOCK_WORDS);
+    }
+
     inline InternalIndex get_internal_index(const std::size_t index) const
     {
         const auto block_offset = BLOCK_ELEMENTS * (index / BLOCK_ELEMENTS);
