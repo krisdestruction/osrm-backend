@@ -116,21 +116,23 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
         std::size_t lower_word;
         // index to the element of the block
         std::uint8_t element;
+
+        bool operator==(const InternalIndex &other) const { return std::tie(lower_word, element) == std::tie(other.lower_word, other.element); }
     };
 
   public:
     using value_type = T;
     using block_type = WordT;
 
-    class reference
+    class internal_reference
     {
       public:
-        reference(PackedVector &container, const InternalIndex internal_index)
+        internal_reference(PackedVector &container, const InternalIndex internal_index)
             : container(container), internal_index(internal_index)
         {
         }
 
-        reference &operator=(const value_type value)
+        internal_reference &operator=(const value_type value)
         {
             container.set_value(internal_index, value);
             return *this;
@@ -138,20 +140,25 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
 
         operator T() const { return container.get_value(internal_index); }
 
-        friend bool operator==(const value_type lhs, const reference &rhs)
+        bool operator==(const internal_reference &other) const
         {
-            return static_cast<T>(rhs) == lhs;
+            return &container == &other.container && internal_index == other.internal_index;
         }
 
-        friend bool operator==(const reference &lhs, const value_type rhs)
-        {
-            return static_cast<T>(lhs) == rhs;
-        }
+        // I would remove this and use explicit casting if needed
+        // friend bool operator==(const internal_reference &lhs, const value_type rhs)
+        // {
+        //     return static_cast<T>(lhs) == rhs;
+        // }
 
-        friend std::ostream &operator<<(std::ostream &lhs, const reference &rhs)
+        // friend bool operator==(const value_type lhs, const internal_reference &rhs)
+        // {
+        //     return lhs == static_cast<T>(rhs);
+        // }
+
+        friend std::ostream &operator<<(std::ostream &os, const internal_reference &rhs)
         {
-            lhs << static_cast<T>(rhs);
-            return lhs;
+            return os << static_cast<T>(rhs);
         }
 
       private:
@@ -161,9 +168,9 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
 
     template<typename DataT>
     class iterator_impl
-        : public boost::iterator_facade<PackedVector, DataT, boost::random_access_traversal_tag, reference>
+        : public boost::iterator_facade<iterator_impl<DataT>, DataT, boost::random_access_traversal_tag, internal_reference>
     {
-        typedef boost::iterator_facade<PackedVector, DataT, boost::random_access_traversal_tag> base_t;
+        typedef boost::iterator_facade<iterator_impl<DataT>, DataT, boost::random_access_traversal_tag, internal_reference> base_t;
 
       public:
         typedef typename base_t::value_type value_type;
@@ -226,7 +233,7 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
 
     auto operator[](const std::size_t index) const { return get_value(get_internal_index(index)); }
 
-    auto operator[](const std::size_t index) { return reference{*this, get_internal_index(index)}; }
+    auto operator[](const std::size_t index) { return internal_reference{*this, get_internal_index(index)}; }
 
     auto at(std::size_t index) const
     {
@@ -275,7 +282,7 @@ template <typename T, std::size_t Bits, storage::Ownership Ownership> class Pack
         set_value(internal_index, value);
         num_elements++;
 
-        BOOST_ASSERT(back() == value);
+        BOOST_ASSERT(static_cast<T>(back()) == value);
     }
 
     std::size_t size() const { return num_elements; }
